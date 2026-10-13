@@ -110,7 +110,20 @@ MANIFEST = {
 }
 
 
-def summary_markdown(report: dict, backtest: dict, n_fixtures: int, n_signals: int) -> str:
+def backtest_grid(evals: pd.DataFrame, settings: dict, champions: dict) -> list[dict]:
+    """Backtest of the default rules for every price source and a few EV thresholds."""
+    rows = []
+    for src in ("avg", "max", "pinnacle", "b365"):
+        for min_ev in (0.0, 0.03, 0.05, 0.10):
+            bt = stats.backtest(evals, {**settings, "price_source": src, "min_ev": min_ev}, champions)
+            if bt.get("available"):
+                rows.append({"price_source": src, "min_ev": min_ev, **bt["summary"],
+                             "by_market": bt["by_market"]})
+    return rows
+
+
+def summary_markdown(report: dict, backtest: dict, n_fixtures: int, n_signals: int,
+                     grid: list[dict] | None = None) -> str:
     """Short run report for the console and the GitHub Actions job summary."""
     lines = ["## Value Bot", "", f"Матчей впереди: **{n_fixtures}**, сигналов (настройки по умолчанию): **{n_signals}**", ""]
     lines += ["| Рынок | Модель | Log-loss | Рынок | Δ ± SE | Матчей |", "|---|---|---|---|---|---|"]
@@ -127,6 +140,16 @@ def summary_markdown(report: dict, backtest: dict, n_fixtures: int, n_signals: i
         roi = "—" if b["roi"] is None else f"{b['roi']:+.1%} ± {(b['roi_se'] or 0):.1%}"
         clv = "—" if b["avg_clv"] is None else f"{b['avg_clv']:+.1%}"
         lines += ["", f"Бэктест вне выборки: ставок {b['n']}, ROI {roi}, прибыль {b['profit']:+.1f} ед., CLV {clv}"]
+    if grid:
+        fmt = lambda v, f: "—" if v is None else format(v, f)  # noqa: E731
+        lines += ["", "| Кэф | EV ≥ | Ставок | ROI ± SE | CLV | 1X2: ставок / ROI / CLV | Тотал: ставок / ROI / CLV |",
+                  "|---|---|---|---|---|---|---|"]
+        for g in grid:
+            per = {m["name"]: m for m in g["by_market"]}
+            cells = [f"{per[m]['n']} / {fmt(per[m]['roi'], '+.1%')} / {fmt(per[m]['avg_clv'], '+.1%')}" if m in per else "—"
+                     for m in ("1X2", "OU25")]
+            lines.append(f"| {g['price_source']} | {g['min_ev']:.0%} | {g['n']} | {fmt(g['roi'], '+.1%')} ± {fmt(g['roi_se'], '.1%')} "
+                         f"| {fmt(g['avg_clv'], '+.1%')} | {cells[0]} | {cells[1]} |")
     return "\n".join(lines) + "\n"
 
 
@@ -197,7 +220,7 @@ def build(out: Path, leagues: list[str] | None = None, update: bool = True) -> N
         1 for rec in records if rec["div"] in settings["leagues"]
         for m in settings["markets"] if engine.evaluate_fixture(rec, m, settings)
     )
-    text = summary_markdown(report, backtest, len(records), n_signals)
+    text = summary_markdown(report, backtest, len(records), n_signals, backtest_grid(evals, settings, champions))
     print(text, flush=True)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
