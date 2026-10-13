@@ -263,6 +263,21 @@ def refresh_tips(conn, settings: dict, now: pd.Timestamp) -> None:
     conn.execute(f"UPDATE tips SET active=0 WHERE kickoff > ?{keep_clause}", (stamp, *keep))
 
 
+def report_summary(report: dict | None) -> dict:
+    """Champion per market and its log-loss next to the market's."""
+    out = {}
+    for market, r in ((report or {}).get("markets") or {}).items():
+        mets = {m["model"]: m for m in r["metrics"]}
+        champ, base = mets.get(r["champion"]), mets.get("market")
+        out[market] = {
+            "champion": r["champion"], "title": model.MODEL_NAMES.get(r["champion"], r["champion"]),
+            "logloss": champ["logloss"] if champ else None,
+            "market_logloss": base["logloss"] if base else None,
+            "n": champ["n"] if champ else 0,
+        }
+    return out
+
+
 def current_bankroll(conn, settings: dict) -> float:
     profit = conn.execute("SELECT COALESCE(SUM(profit), 0) FROM bets WHERE status IN ('won','lost','void')").fetchone()[0]
     return float(settings["bankroll"]) + float(profit)
@@ -293,16 +308,19 @@ def find_result(res: dict, div: str, home: str, away: str, kickoff: str):
     return None
 
 
-def _closing(res: dict, pos: int, market: str, selection: str):
-    i = SELECTIONS[market].index(selection)
-    p = res["close"][market][pos, i]
-    row = res["hist"].iloc[pos]
-    raw = None
+def closing_odds(row, market: str, i: int) -> float | None:
+    """Raw closing price of selection ``i``: Pinnacle if quoted, otherwise market average."""
     for src in ("pinnacle_close", "avg_close"):
         v = row[ODDS_COLS[market][src][i]]
         if pd.notna(v):
-            raw = float(v)
-            break
+            return float(v)
+    return None
+
+
+def _closing(res: dict, pos: int, market: str, selection: str):
+    i = SELECTIONS[market].index(selection)
+    p = res["close"][market][pos, i]
+    raw = closing_odds(res["hist"].iloc[pos], market, i)
     return (None if np.isnan(p) else float(p)), raw
 
 

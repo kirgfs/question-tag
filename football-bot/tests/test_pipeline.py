@@ -6,28 +6,10 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from fbot import config, data, db, engine, model, server
+from fbot import data, db, engine, model, server
 from fbot.markets import settle
-from tests.synth import generate
 
 quiet = lambda _msg: None  # noqa: E731
-
-
-@pytest.fixture(scope="module")
-def env(tmp_path_factory):
-    root = tmp_path_factory.mktemp("bot")
-    generate(root / "src", date.today(), leagues=("E0", "D1"), n_teams=14, seed=1)
-    mp = pytest.MonkeyPatch()
-    mp.setattr(config, "SOURCE_DIR", str(root / "src"))
-    mp.setattr(config, "DATA_DIR", root / "data")
-    mp.setattr(config, "RAW_DIR", root / "data" / "raw")
-    mp.setattr(config, "DB_PATH", root / "data" / "bot.db")
-    db.init()
-    with db.session() as conn:
-        db.save_settings(conn, {"leagues": ["E0", "D1"], "price_source": "max", "min_ev": 0.0})
-    assert engine.run_update(), engine.STATUS["error"]
-    yield root
-    mp.undo()
 
 
 @pytest.fixture

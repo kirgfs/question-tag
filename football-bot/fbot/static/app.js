@@ -19,6 +19,8 @@ const state = {
 };
 
 async function api(path, opts = {}) {
+  // GitHub Pages build: answered in the browser by static-api.js
+  if (window.FBOT_STATIC_API) return window.FBOT_STATIC_API(path, opts);
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
   let body = null;
   try { body = await res.json(); } catch { /* empty */ }
@@ -136,7 +138,7 @@ async function refreshStatus() {
   $("#badge-signals").textContent = s.counts.signals || "";
   $("#badge-open").textContent = s.counts.open_bets || "";
   $("#upd-text").innerHTML = s.running ? `<span class="spinner"></span>обновляю…`
-    : s.last_update ? `обновлено<br>${esc(dt(s.last_update))}` : "данных ещё нет";
+    : s.last_update ? `${s.static ? "данные от" : "обновлено"}<br>${esc(dt(s.last_update))}` : "данных ещё нет";
   $("#btn-update").disabled = s.running;
 
   const prog = $("#progress");
@@ -145,6 +147,10 @@ async function refreshStatus() {
     prog.innerHTML = `<div class="box ${s.error && !s.running ? "warn" : ""}">
       ${s.running ? `<span class="spinner"></span><b>Обновление:</b> ${esc(s.step)}` : `<b>Ошибка обновления:</b> ${esc(s.error)}`}
       <pre>${esc(s.log.slice(-12).join("\n"))}</pre></div>`;
+  } else if (s.stale_hours) {
+    prog.hidden = false;
+    prog.innerHTML = `<div class="box warn"><b>Данные не обновлялись ${fmtNum(s.stale_hours, 0)} ч.</b>
+      Автопересчёт на GitHub мог остановиться${s.repo_url ? ` — открой <a href="${esc(s.repo_url)}/actions" target="_blank" rel="noopener">GitHub Actions</a> и запусти его заново` : ""}.</div>`;
   } else {
     prog.hidden = true;
   }
@@ -154,11 +160,18 @@ async function refreshStatus() {
   }
   state.wasRunning = s.running;
   clearTimeout(refreshStatus.timer);
-  refreshStatus.timer = setTimeout(refreshStatus, s.running ? 2500 : 30000);
+  refreshStatus.timer = setTimeout(refreshStatus, s.running ? 2500 : s.static ? 60000 : 30000);
 }
 
 $("#btn-update").addEventListener("click", async () => {
-  const r = await api("/api/update", { method: "POST" });
+  let r;
+  try { r = await api("/api/update", { method: "POST" }); } catch (e) { toast("Ошибка: " + e.message); return; }
+  if (r.reloaded) {
+    toast("Загружены свежие данные");
+    await refreshStatus();
+    render();
+    return;
+  }
   toast(r.started ? "Обновление запущено" : "Обновление уже идёт");
   state.wasRunning = true;
   refreshStatus();
@@ -234,17 +247,19 @@ $("#bet-form").addEventListener("submit", async (e) => {
 function modelNotes(markets) {
   const s = state.status;
   if (!s || !s.models) return "";
-  const out = [];
+  const byText = new Map();  // markets with the same verdict share one line
   for (const m of markets) {
     const r = s.models[m];
     if (!r) continue;
-    const name = m === "1X2" ? "Исход матча" : "Тотал 2.5";
+    let text = null;
     if (r.champion === "market") {
-      out.push(`<p><b>${name}:</b> на исторической проверке (${fmtNum(r.n)} матчей) ни одна модель не точнее честной цены Pinnacle. Сигналы здесь — места, где кэф букмекеров выше честной цены рынка.</p>`);
+      text = `на исторической проверке (${fmtNum(r.n)} матчей) ни одна модель не точнее честной цены Pinnacle. Сигналы здесь — места, где кэф букмекеров выше честной цены рынка.`;
     } else if (isNum(r.logloss) && isNum(r.market_logloss)) {
-      out.push(`<p><b>${name}:</b> «${esc(r.title)}» точнее рынка на ${fmtNum(r.n)} матчах вне выборки (log-loss ${r.logloss.toFixed(4)} против ${r.market_logloss.toFixed(4)}).</p>`);
+      text = `«${esc(r.title)}» точнее рынка на ${fmtNum(r.n)} матчах вне выборки (log-loss ${r.logloss.toFixed(4)} против ${r.market_logloss.toFixed(4)}).`;
     }
+    if (text) byText.set(text, [...(byText.get(text) || []), m === "1X2" ? "Исход матча" : "Тотал 2.5"]);
   }
+  const out = [...byText].map(([text, names]) => `<p><b>${names.join(" и ")}:</b> ${text}</p>`);
   return out.length ? `<div class="note">${out.join("")}<p class="muted small">Подробности и бэктест — на вкладке «Модель». Кэфы в fixtures.csv — снимок на момент выгрузки: перед ставкой сверь кэф у своей конторы с колонкой «мин. кэф».</p></div>` : "";
 }
 
@@ -265,21 +280,21 @@ async function renderSignals() {
   }
   const rows = d.signals.map((t, i) => `
     <tr>
-      <td class="nowrap">${esc(dt(t.kickoff))}</td>
-      <td class="match"><b>${esc(t.home)} — ${esc(t.away)}</b><div class="sub">${esc(t.league)}</div></td>
-      <td><span class="pick">${esc(t.label)}</span></td>
-      <td class="r num">${prob(t.model_prob)}</td>
-      <td class="r num muted">${prob(t.market_prob)}</td>
-      <td class="r num"><b>${odds(t.price)}</b><div class="small muted">${esc(SRC[t.price_source] || "")}</div></td>
-      <td class="r num">${odds(t.min_odds)}</td>
-      <td class="r num pos"><b>${pct(t.ev, 1, true)}</b></td>
-      <td class="r num"><b>${money(t.stake)}</b></td>
-      <td class="r">${t.placed ? `<span class="chip won">поставлено${t.placed > 1 ? " ×" + t.placed : ""}</span>`
+      <td class="nowrap full t-time">${esc(dt(t.kickoff))}</td>
+      <td class="match full"><b>${esc(t.home)} — ${esc(t.away)}</b><div class="sub">${esc(t.league)}</div></td>
+      <td data-l="Ставка"><span class="pick">${esc(t.label)}</span></td>
+      <td class="r num" data-l="Модель">${prob(t.model_prob)}</td>
+      <td class="r num muted" data-l="Рынок">${prob(t.market_prob)}</td>
+      <td class="r num" data-l="Кэф"><b>${odds(t.price)}</b><div class="small muted">${esc(SRC[t.price_source] || "")}</div></td>
+      <td class="r num" data-l="Мин. кэф">${odds(t.min_odds)}</td>
+      <td class="r num pos" data-l="EV"><b>${pct(t.ev, 1, true)}</b></td>
+      <td class="r num" data-l="Сумма"><b>${money(t.stake)}</b></td>
+      <td class="r act2">${t.placed ? `<span class="chip won">поставлено${t.placed > 1 ? " ×" + t.placed : ""}</span>`
         : `<button class="btn primary sm" data-sig="${i}">Поставил</button>`}</td>
     </tr>`).join("");
   view.innerHTML = head + `<div class="panel">
     <div class="panel-head"><h2>Ставки с перевесом</h2><span class="muted small">EV ≥ ${pct(s.min_ev, 0)} · ${esc(SRC[s.price_source])} кэф · ${s.kelly_fraction} Келли, не больше ${pct(s.max_stake_pct, 0)} банка</span></div>
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table class="rt">
       <thead><tr><th>Начало</th><th>Матч</th><th>Ставка</th><th class="r">Модель</th><th class="r">Рынок</th>
       <th class="r">Кэф</th><th class="r">Мин. кэф</th><th class="r">EV</th><th class="r">Сумма</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
@@ -381,23 +396,23 @@ async function renderBets() {
     .map(([k, l]) => `<button class="${state.betsFilter === k ? "active" : ""}" data-f="${k}">${l}</button>`).join("");
   const rows = d.bets.map((b) => `
     <tr>
-      <td class="nowrap">${esc(dt(b.kickoff))}</td>
-      <td class="match"><b>${esc(b.home)} — ${esc(b.away)}</b><div class="sub">${esc(b.league)}${b.bookmaker ? " · " + esc(b.bookmaker) : ""}${b.note ? " · " + esc(b.note) : ""}</div></td>
-      <td><span class="pick">${esc(b.label)}</span>${b.by_tip ? "" : ' <span class="chip" title="Ставка не по сигналу бота">свой</span>'}</td>
-      <td class="r num"><a href="#" class="edit" data-edit-odds="${b.id}" title="изменить">${odds(b.odds)}</a></td>
-      <td class="r num"><a href="#" class="edit" data-edit-stake="${b.id}" title="изменить">${money(b.stake)}</a></td>
-      <td class="r num ${cls(b.ev)}">${pct(b.ev, 1, true)}</td>
-      <td class="r num ${cls(b.clv)}" title="${isNum(b.close_odds) ? "закрытие: " + odds(b.close_odds) : ""}">${pct(b.clv, 1, true)}</td>
-      <td class="c"><span class="chip ${b.status}">${STATUS_RU[b.status]}</span>${isNum(b.fthg) ? `<div class="small muted">${b.fthg}:${b.ftag}</div>` : ""}</td>
-      <td class="r num ${cls(b.profit)}"><b>${b.status === "open" ? "—" : money(b.profit, true)}</b></td>
-      <td class="r nowrap">${b.status === "open"
+      <td class="nowrap full t-time">${esc(dt(b.kickoff))}</td>
+      <td class="match full"><b>${esc(b.home)} — ${esc(b.away)}</b><div class="sub">${esc(b.league)}${b.bookmaker ? " · " + esc(b.bookmaker) : ""}${b.note ? " · " + esc(b.note) : ""}</div></td>
+      <td data-l="Ставка"><span class="pick">${esc(b.label)}</span>${b.by_tip ? "" : ' <span class="chip" title="Ставка не по сигналу бота">свой</span>'}</td>
+      <td class="r num" data-l="Кэф"><a href="#" class="edit" data-edit-odds="${b.id}" title="изменить">${odds(b.odds)}</a></td>
+      <td class="r num" data-l="Сумма"><a href="#" class="edit" data-edit-stake="${b.id}" title="изменить">${money(b.stake)}</a></td>
+      <td class="r num ${cls(b.ev)}" data-l="EV">${pct(b.ev, 1, true)}</td>
+      <td class="r num ${cls(b.clv)}" data-l="CLV" title="${isNum(b.close_odds) ? "закрытие: " + odds(b.close_odds) : ""}">${pct(b.clv, 1, true)}</td>
+      <td class="c" data-l="Статус"><span class="chip ${b.status}">${STATUS_RU[b.status]}</span>${isNum(b.fthg) ? ` <span class="small muted">${b.fthg}:${b.ftag}</span>` : ""}</td>
+      <td class="r num ${cls(b.profit)}" data-l="Прибыль"><b>${b.status === "open" ? "—" : money(b.profit, true)}</b></td>
+      <td class="r nowrap act2">${b.status === "open"
         ? `<button class="btn sm" data-set="${b.id}:won" title="Отметить выигрыш">✓</button><button class="btn sm" data-set="${b.id}:lost" title="Отметить проигрыш">✗</button><button class="btn sm" data-set="${b.id}:void" title="Возврат">↺</button>`
         : `<button class="btn sm ghost" data-set="${b.id}:open" title="Снова открыть">вернуть</button>`}
         <button class="btn sm ghost danger" data-del="${b.id}" title="Удалить">удалить</button></td>
     </tr>`).join("");
   view.innerHTML = `<div class="toolbar"><div class="seg">${seg}</div><span class="grow"></span>
       <span class="muted small">Ставки рассчитываются автоматически, когда в данных появляется результат. Если матч перенесли — отметь вручную.</span></div>
-    ${d.bets.length ? `<div class="panel"><div class="table-wrap"><table>
+    ${d.bets.length ? `<div class="panel"><div class="table-wrap"><table class="rt">
       <thead><tr><th>Начало</th><th>Матч</th><th>Ставка</th><th class="r">Кэф</th><th class="r">Сумма</th><th class="r">EV</th>
       <th class="r" title="Доходность к честной цене закрытия Pinnacle">CLV</th><th class="c">Статус</th><th class="r">Прибыль</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>`
@@ -479,11 +494,11 @@ async function renderModel() {
     const rows = [...info.metrics].sort((a, b) => a.logloss - b.logloss).map((x) => `
       <tr class="${x.model === info.champion ? "hl" : ""}"><td>${esc(x.title)}${x.model === info.champion ? " ★" : ""}</td>
       <td class="r num">${x.logloss.toFixed(4)}</td><td class="r num ${x.model === "market" ? "" : cls(-x.delta)}">${x.model === "market" || !isNum(x.delta) ? "—" : `${x.delta > 0 ? "+" : "−"}${Math.abs(x.delta).toFixed(4)} <small class="muted">± ${x.delta_se.toFixed(4)}</small>`}</td>
-      <td class="r num">${x.rps.toFixed(4)}</td><td class="r num">${pct(x.accuracy, 1)}</td></tr>`).join("");
+      <td class="r num hide-m">${x.rps.toFixed(4)}</td><td class="r num hide-m">${pct(x.accuracy, 1)}</td></tr>`).join("");
     const w = info.pool_weights ? Object.entries(info.pool_weights).map(([k, v]) => `${{ market: "рынок", dc: "Dixon-Coles", pi: "Pi" }[k]} ${v.toFixed(2)}`).join(" · ") : "";
     const n = info.metrics[0]?.n || 0;
     return `<div class="panel"><div class="panel-head"><h2>${m === "1X2" ? "Исход матча (1X2)" : "Тотал 2.5"}</h2><span class="muted small">${fmtNum(n)} матчей вне выборки</span></div>
-      <div class="table-wrap"><table><thead><tr><th>Модель</th><th class="r">Log-loss</th><th class="r" title="Разница log-loss с рынком ± стандартная ошибка">Δ к рынку</th><th class="r">RPS</th><th class="r">Угадано</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Модель</th><th class="r">Log-loss</th><th class="r" title="Разница log-loss с рынком ± стандартная ошибка">Δ к рынку</th><th class="r hide-m">RPS</th><th class="r hide-m">Угадано</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="panel-body small muted">★ — используется для прогнозов. Меньше — лучше. Модель заменяет рынок, только если обыгрывает его больше чем на одну стандартную ошибку.${w ? `<br>Веса смешивания: ${w}` : ""}</div></div>`;
   }).join("");
 
@@ -513,7 +528,8 @@ async function renderModel() {
   view.innerHTML = `<div class="note"><p>Как проверяется модель: Dixon-Coles переобучается каждую неделю только на прошлых матчах, Pi-рейтинги обновляются по ходу сезона,
       ансамбли учатся на предыдущих сезонах и проверяются на следующем. Метрики ниже — на матчах, которых модель не видела.
       «Рынок» — вероятности Pinnacle без маржи (метод Шина) на момент выгрузки, главный ориентир.</p>
-      <p class="muted small">Ансамбль-бустинг: ${r.xgboost ? "XGBoost" : "XGBoost не установлен, используется бустинг из scikit-learn"} · отчёт от ${esc(dt(r.generated_at))}</p></div>
+      <p class="muted small">Ансамбль-бустинг: ${r.xgboost ? "XGBoost" : "XGBoost не установлен, используется бустинг из scikit-learn"} · отчёт от ${esc(dt(r.generated_at))}</p>
+      ${d.static ? `<p class="muted small">Бэктест посчитан на GitHub для настроек по умолчанию (EV ≥ ${pct(s.min_ev, 0)}, ${esc(SRC[s.price_source])} кэф, ${odds(s.min_odds)}–${odds(s.max_odds)}), а не для твоих.</p>` : ""}</div>
     <div class="grid2">${marketCards}</div>
     <h3 style="margin:22px 0 12px">Историческая проверка стратегии</h3>
     ${btHtml}
@@ -538,21 +554,23 @@ async function renderSettings() {
       ${f("s-maxodds", "Макс. кэф", s.max_odds, 'type="number" min="1.02" step="0.01" required')}
       <div class="field"><label for="s-src">Кэф для расчёта EV</label><select id="s-src">${Object.entries(d.price_sources).map(([k, v]) => `<option value="${k}" ${k === s.price_source ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>
         <div class="hint">«Лучший» — максимум по рынку, у твоей конторы может быть ниже</div></div>
-      ${f("s-auto", "Автообновление, часов", s.auto_update_hours, 'type="number" min="0" max="168" step="1" required', "0 — только вручную")}
+      ${d.static ? "" : f("s-auto", "Автообновление, часов", s.auto_update_hours, 'type="number" min="0" max="168" step="1" required', "0 — только вручную")}
     </div>
     <div class="panel-body"><div class="checks">${Object.entries(d.markets).map(([k, v]) => `<label><input type="checkbox" name="mk" value="${k}" ${s.markets.includes(k) ? "checked" : ""}> ${esc(v)}</label>`).join("")}</div></div></div>
     <div class="panel"><h2>Лиги</h2><div class="panel-body"><div class="checks">
       ${Object.entries(d.leagues).map(([k, v]) => `<label><input type="checkbox" name="lg" value="${k}" ${s.leagues.includes(k) ? "checked" : ""}> ${esc(v)}</label>`).join("")}
-    </div><p class="muted small">Новые лиги скачаются и обучатся автоматически после сохранения (1–2 минуты на лигу).</p></div></div>
+    </div><p class="muted small">${d.static ? "Отмеченные лиги показываются в сигналах и матчах." : "Новые лиги скачаются и обучатся автоматически после сохранения (1–2 минуты на лигу)."}</p></div></div>
     <div><button class="btn primary" type="submit">Сохранить</button></div>
-  </form>`;
+  </form>
+  ${d.static ? backupPanel(d) : ""}`;
+  if (d.static) bindBackup();
   $("#settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const num = (id) => parseFloat($(id).value.replace(",", "."));
     const body = {
       bankroll: num("#s-bank"), currency: $("#s-cur").value.trim(), kelly_fraction: num("#s-kelly"),
       max_stake_pct: num("#s-cap") / 100, min_ev: num("#s-ev") / 100, min_odds: num("#s-minodds"),
-      max_odds: num("#s-maxodds"), price_source: $("#s-src").value, auto_update_hours: num("#s-auto"),
+      max_odds: num("#s-maxodds"), price_source: $("#s-src").value, auto_update_hours: $("#s-auto") ? num("#s-auto") : 0,
       markets: $$('input[name="mk"]:checked').map((x) => x.value),
       leagues: $$('input[name="lg"]:checked').map((x) => x.value),
     };
@@ -564,6 +582,59 @@ async function renderSettings() {
     } catch (err) {
       toast("Ошибка: " + err.message);
     }
+  });
+}
+
+function backupPanel(d) {
+  const run = d.repo_url ? `${esc(d.repo_url)}/actions/workflows/football-bot.yml` : null;
+  return `<div class="panel" style="margin-top:16px"><h2>Данные на этом телефоне</h2><div class="panel-body stack">
+    <p>Ставки и настройки хранятся только в этом браузере. Сохраняй резервную копию: если очистить данные браузера или сменить телефон, без неё они пропадут.</p>
+    <div class="toolbar">
+      <button type="button" class="btn" id="bk-export">Сохранить копию</button>
+      <label class="btn">Восстановить из файла<input type="file" id="bk-import" accept="application/json,.json" hidden></label>
+      <button type="button" class="btn danger" id="bk-reset">Удалить все ставки</button>
+    </div>
+    <p class="muted small">Прогнозы пересчитываются на GitHub автоматически каждые ${d.update_hours} ч.${run ? ` Пересчитать сейчас: <a href="${run}" target="_blank" rel="noopener">GitHub Actions → Run workflow</a>.` : ""}</p>
+  </div></div>`;
+}
+
+function bindBackup() {
+  $("#bk-export").addEventListener("click", async () => {
+    const data = await api("/api/backup");
+    const name = `value-bot-${new Date().toISOString().slice(0, 10)}.json`;
+    const file = new File([JSON.stringify(data)], name, { type: "application/json" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: "Value Bot — резервная копия" }); return; } catch (e) { if (e.name === "AbortError") return; }
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(file);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  });
+  $("#bk-import").addEventListener("change", async (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      const n = Array.isArray(data.bets) ? data.bets.length : 0;
+      if (!confirm(`Заменить текущие ставки на ${n} из файла?`)) return;
+      const r = await api("/api/backup", { method: "POST", body: JSON.stringify(data) });
+      toast(`Восстановлено ставок: ${r.bets}`);
+      refreshStatus();
+      render();
+    } catch (err) {
+      toast("Ошибка: " + err.message);
+    }
+  });
+  $("#bk-reset").addEventListener("click", async () => {
+    if (!confirm("Удалить все ставки с этого телефона? Это нельзя отменить.")) return;
+    await api("/api/backup", { method: "POST", body: JSON.stringify({ app: "fbot", version: 1, bets: [] }) });
+    toast("Ставки удалены");
+    refreshStatus();
   });
 }
 

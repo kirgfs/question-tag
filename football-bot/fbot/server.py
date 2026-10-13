@@ -96,20 +96,6 @@ def _selection_views(rec: dict, settings: dict, bankroll: float) -> dict:
     return views
 
 
-def _report_summary(report: dict | None) -> dict:
-    out = {}
-    for market, r in ((report or {}).get("markets") or {}).items():
-        mets = {m["model"]: m for m in r["metrics"]}
-        champ, base = mets.get(r["champion"]), mets.get("market")
-        out[market] = {
-            "champion": r["champion"], "title": model.MODEL_NAMES.get(r["champion"], r["champion"]),
-            "logloss": champ["logloss"] if champ else None,
-            "market_logloss": base["logloss"] if base else None,
-            "n": champ["n"] if champ else 0,
-        }
-    return out
-
-
 # ------------------------------------------------------------------- routes ---
 
 @app.get("/api/status")
@@ -134,7 +120,7 @@ def status():
         "log": st["log"][-40:], "counts": counts, "bankroll": bankroll,
         "start_bankroll": settings["bankroll"], "currency": settings["currency"],
         "profit": profit, "roi": profit / staked if staked else None,
-        "models": _report_summary(report),
+        "models": engine.report_summary(report),
     }
 
 
@@ -307,7 +293,7 @@ def get_model():
     return {
         "report": report,
         "names": model.MODEL_NAMES,
-        "summary": _report_summary(report),
+        "summary": engine.report_summary(report),
         "backtest": stats.backtest(evals, settings, champions),
         "settings": settings,
     }

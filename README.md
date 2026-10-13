@@ -9,4 +9,4 @@ The best advicde
 
 ## football-bot
 
-`football-bot/` — локальный сайт с футбольным value-ботом (penaltyblog + ансамбль моделей, учёт ставок и статистика). Запуск и описание — в [football-bot/README.md](football-bot/README.md).
+`football-bot/` — футбольный value-бот (penaltyblog + ансамбль моделей, учёт ставок и статистика). Работает на телефоне через GitHub Pages (https://kirgfs.github.io/question-tag/) или локально на компьютере. Запуск и описание — в [football-bot/README.md](football-bot/README.md).
