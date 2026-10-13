@@ -162,3 +162,14 @@ def backtest(evals: pd.DataFrame, settings: dict, champions: dict[str, str]) -> 
     if len(cum) and (len(cum) - 1) % step:
         result["curve"].append({"t": str(champ["date"].iloc[-1]), "v": round(float(cum[-1]), 2)})
     return result
+
+
+def backtest_grid(evals: pd.DataFrame, settings: dict, champions: dict[str, str]) -> list[dict]:
+    """Backtest summary for every price source and a few EV thresholds (other rules as in ``settings``)."""
+    rows = []
+    for src in ("avg", "max", "pinnacle", "b365"):
+        for min_ev in (0.0, 0.03, 0.05, 0.10):
+            bt = backtest(evals, {**settings, "price_source": src, "min_ev": min_ev}, champions)
+            if bt.get("available"):
+                rows.append({"price_source": src, "min_ev": min_ev, **bt["summary"], "by_market": bt["by_market"]})
+    return rows

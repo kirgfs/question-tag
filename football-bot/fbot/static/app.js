@@ -508,7 +508,16 @@ async function renderModel() {
     const tbl = (rows, first) => `<div class="table-wrap"><table><thead><tr><th>${first}</th><th class="r">Ставок</th><th class="r">Средний кэф</th><th class="r">Выигрыш</th><th class="r">Прибыль</th><th class="r">ROI</th><th class="r">CLV</th></tr></thead>
       <tbody>${rows.map((x) => `<tr><td>${x.label}</td><td class="r num">${x.n}</td><td class="r num">${odds(x.avg_odds)}</td><td class="r num">${pct(x.hit_rate, 0)}</td>
       <td class="r num ${cls(x.profit)}">${units(x.profit)}</td><td class="r num">${roiWithSe(x.roi, x.roi_se)}</td><td class="r num ${cls(x.avg_clv)}">${pct(x.avg_clv, 1, true)}</td></tr>`).join("")}</tbody></table></div>`;
-    btHtml = `<div class="tiles">
+    const grid = d.grid || [];
+    const gridHtml = grid.length ? `<div class="panel"><h2>По какому кэфу ставить</h2>
+      <div class="panel-body small">Результат стратегии сильно зависит от кэфа, по которому ставишь. «Средний» — типичная контора,
+        «лучший» — максимум по рынку на момент выгрузки (часто это одна контора с лимитами). Если CLV отрицательный, на дистанции такие ставки проигрывают.</div>
+      <div class="table-wrap"><table><thead><tr><th>Кэф</th><th class="r">EV ≥</th><th class="r">Ставок</th><th class="r">ROI</th><th class="r">CLV</th></tr></thead>
+      <tbody>${grid.map((g) => `<tr class="${g.price_source === s.price_source && Math.abs(g.min_ev - s.min_ev) < 1e-9 ? "hl" : ""}">
+        <td>${esc(SRC[g.price_source])}</td><td class="r num">${pct(g.min_ev, 0)}</td><td class="r num">${g.n}</td>
+        <td class="r num">${roiWithSe(g.roi, g.roi_se)}</td><td class="r num ${cls(g.avg_clv)}">${pct(g.avg_clv, 1, true)}</td></tr>`).join("")}</tbody>
+      </table></div></div>` : "";
+    btHtml = gridHtml + `<div class="tiles">
         <div class="tile"><span>Ставок в бэктесте</span><b>${sm.n}</b><small>${esc(SRC[s.price_source])} кэф, EV ≥ ${pct(s.min_ev, 0)}</small></div>
         <div class="tile"><span>ROI</span><b>${roiWithSe(sm.roi, sm.roi_se)}</b><small>плоская ставка 1 ед.</small></div>
         <div class="tile"><span>Прибыль</span><b class="${cls(sm.profit)}">${units(sm.profit)}</b><small>выигрыш ${pct(sm.hit_rate, 0)}</small></div>

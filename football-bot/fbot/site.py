@@ -110,18 +110,6 @@ MANIFEST = {
 }
 
 
-def backtest_grid(evals: pd.DataFrame, settings: dict, champions: dict) -> list[dict]:
-    """Backtest of the default rules for every price source and a few EV thresholds."""
-    rows = []
-    for src in ("avg", "max", "pinnacle", "b365"):
-        for min_ev in (0.0, 0.03, 0.05, 0.10):
-            bt = stats.backtest(evals, {**settings, "price_source": src, "min_ev": min_ev}, champions)
-            if bt.get("available"):
-                rows.append({"price_source": src, "min_ev": min_ev, **bt["summary"],
-                             "by_market": bt["by_market"]})
-    return rows
-
-
 def summary_markdown(report: dict, backtest: dict, n_fixtures: int, n_signals: int,
                      grid: list[dict] | None = None) -> str:
     """Short run report for the console and the GitHub Actions job summary."""
@@ -201,11 +189,13 @@ def build(out: Path, leagues: list[str] | None = None, update: bool = True) -> N
         "results": results_payload(hist, now) if not hist.empty else [],
     })
     backtest = stats.backtest(evals, settings, champions)
+    grid = stats.backtest_grid(evals, settings, champions)
     _write_json(out / "data" / "model.json", {
         "report": report,
         "names": model.MODEL_NAMES,
         "summary": engine.report_summary(report),
         "backtest": backtest,
+        "grid": grid,
         "backtest_settings": settings,
         "paper": stats.summarize([{**t, "odds": t["price"], "stake": 1.0} for t in tips], 0.0),
     })
@@ -220,7 +210,7 @@ def build(out: Path, leagues: list[str] | None = None, update: bool = True) -> N
         1 for rec in records if rec["div"] in settings["leagues"]
         for m in settings["markets"] if engine.evaluate_fixture(rec, m, settings)
     )
-    text = summary_markdown(report, backtest, len(records), n_signals, backtest_grid(evals, settings, champions))
+    text = summary_markdown(report, backtest, len(records), n_signals, grid)
     print(text, flush=True)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:

@@ -55,10 +55,12 @@ DEFAULT_SETTINGS: dict = {
     "currency": "₽",
     "kelly_fraction": 0.25,     # fraction of full Kelly
     "max_stake_pct": 0.03,      # hard cap per bet, share of current bankroll
-    "min_ev": 0.03,             # minimum expected value to signal a bet
+    "min_ev": 0.05,             # minimum expected value to signal a bet
     "min_odds": 1.40,
     "max_odds": 5.00,
-    "price_source": "avg",      # which odds the EV is computed at
+    # Which odds the EV is computed at. On real data (2024-2026, 18 leagues) only the best
+    # market price had a positive out-of-sample backtest; average prices lost ~5% CLV.
+    "price_source": "max",
     "markets": ["1X2", "OU25"],
     "leagues": DEFAULT_LEAGUES,
     "auto_update_hours": 6,

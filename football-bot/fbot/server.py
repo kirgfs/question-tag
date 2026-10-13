@@ -295,6 +295,7 @@ def get_model():
         "names": model.MODEL_NAMES,
         "summary": engine.report_summary(report),
         "backtest": stats.backtest(evals, settings, champions),
+        "grid": stats.backtest_grid(evals, settings, champions),
         "settings": settings,
     }
 

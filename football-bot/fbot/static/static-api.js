@@ -51,7 +51,18 @@
 
   async function load(force) {
     if (site && !force && Date.now() - loadedAt < RELOAD_MS) return;
-    const [s, r] = await Promise.all([getJSON("data/fixtures.json"), getJSON("data/results.json")]);
+    let s, r;
+    try {
+      [s, r] = await Promise.all([getJSON("data/fixtures.json"), getJSON("data/results.json")]);
+    } catch (e) {
+      // Offline or Pages hiccup: keep working with the data we already have
+      // (bets live in localStorage); only a manual refresh reports the error.
+      if (site && !force) {
+        loadedAt = Date.now() - RELOAD_MS + 60 * 1000;  // retry in a minute
+        return;
+      }
+      throw e;
+    }
     site = s;
     results = r;
     model = null;
