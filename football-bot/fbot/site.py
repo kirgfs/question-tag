@@ -110,6 +110,26 @@ MANIFEST = {
 }
 
 
+def summary_markdown(report: dict, backtest: dict, n_fixtures: int, n_signals: int) -> str:
+    """Short run report for the console and the GitHub Actions job summary."""
+    lines = ["## Value Bot", "", f"Матчей впереди: **{n_fixtures}**, сигналов (настройки по умолчанию): **{n_signals}**", ""]
+    lines += ["| Рынок | Модель | Log-loss | Рынок | Δ ± SE | Матчей |", "|---|---|---|---|---|---|"]
+    for market, r in report["markets"].items():
+        mets = {m["model"]: m for m in r["metrics"]}
+        champ, base = mets.get(r["champion"]), mets.get("market")
+        if not champ or not base:
+            continue
+        delta = "—" if r["champion"] == "market" else f"{champ['delta']:+.4f} ± {champ['delta_se']:.4f}"
+        lines.append(f"| {MARKETS[market]} | {model.MODEL_NAMES[r['champion']]} | {champ['logloss']:.4f} "
+                     f"| {base['logloss']:.4f} | {delta} | {champ['n']} |")
+    if backtest.get("available"):
+        b = backtest["summary"]
+        roi = "—" if b["roi"] is None else f"{b['roi']:+.1%} ± {(b['roi_se'] or 0):.1%}"
+        clv = "—" if b["avg_clv"] is None else f"{b['avg_clv']:+.1%}"
+        lines += ["", f"Бэктест вне выборки: ставок {b['n']}, ROI {roi}, прибыль {b['profit']:+.1f} ед., CLV {clv}"]
+    return "\n".join(lines) + "\n"
+
+
 def build(out: Path, leagues: list[str] | None = None, update: bool = True) -> None:
     """Refresh the data (unless ``update`` is False) and write the static site to ``out``."""
     db.init()
@@ -157,11 +177,12 @@ def build(out: Path, leagues: list[str] | None = None, update: bool = True) -> N
         "generated_at": stamp,
         "results": results_payload(hist, now) if not hist.empty else [],
     })
+    backtest = stats.backtest(evals, settings, champions)
     _write_json(out / "data" / "model.json", {
         "report": report,
         "names": model.MODEL_NAMES,
         "summary": engine.report_summary(report),
-        "backtest": stats.backtest(evals, settings, champions),
+        "backtest": backtest,
         "backtest_settings": settings,
         "paper": stats.summarize([{**t, "odds": t["price"], "stake": 1.0} for t in tips], 0.0),
     })
@@ -171,3 +192,13 @@ def build(out: Path, leagues: list[str] | None = None, update: bool = True) -> N
         shutil.copyfile(STATIC / name, out / name)
     _write_json(out / "manifest.webmanifest", MANIFEST)
     (out / ".nojekyll").write_text("", encoding="utf-8")
+
+    n_signals = sum(
+        1 for rec in records if rec["div"] in settings["leagues"]
+        for m in settings["markets"] if engine.evaluate_fixture(rec, m, settings)
+    )
+    text = summary_markdown(report, backtest, len(records), n_signals)
+    print(text, flush=True)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write(text)
